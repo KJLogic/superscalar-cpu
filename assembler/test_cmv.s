@@ -1,5 +1,5 @@
     # Clear registers to zero.
-    ldi r0, 0
+    ldi r0, 0  # load initial zero
     mv r1, r0
     mv r2, r1
     mv r3, r2
@@ -94,14 +94,14 @@
     ldi r0, 3
     ldi r1, 42
     ldi r3, 1
-    ldi r4, -6
+    ldi r4, (loop-exit+2)
     ldi r5, 2
-# loop:
+loop:
     add r2, r1
     sub r0, r3    # ZF indicates whether r0 reached 0
     cmv.z r4, r5  # r4 = 2 if ZF else -6
     jrelr r4      # "exit" if ZF else "loop"
-# exit:
+exit:
     ldi r1, 0
     ldi r3, 0
     ldi r4, 0
@@ -144,8 +144,8 @@
     # b = {r3,r2}
     # c = {r5,r4}
     ldi r2, 1  # b = 1
-    ldi r6, -16
-# loop2:
+    ldi r6, (loop2-exit2+2) #-16
+loop2:
     mv r4, r0     # c = a
     mv r5, r1
     mv r0, r2     # a = b
@@ -155,7 +155,7 @@
     ldi r5, 2
     cmv.c r6, r5  # r6 = 2 if CF else -16
     jrelr r6      # "exit2" if CF else "loop2"
-# exit2:
+exit2:
     # a = {r1,r0} = 10110101_00100000 (46368)
     ldi r6, 0
     mv r5, r6

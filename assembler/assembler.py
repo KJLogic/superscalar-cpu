@@ -14,6 +14,8 @@ class OperandKind(Enum):
     Reg = auto()
     RegPair = auto()
     Cond = auto()
+    Label = auto()
+    Expression = auto()
 
 
 # An instruction operand, like a register or an immediate value.
@@ -59,7 +61,8 @@ class Opcode(Enum):
 
     # Assembler directives
     D_ORG = auto()
-
+    D_LABEL = auto()
+    
 
 # A condition code.
 class Condition(Enum):
@@ -123,6 +126,16 @@ class Instruction:
             s += " " + repr(op)
         return s
 
+# An assembly instruction, represented by its opcode and list of operands.
+@dataclass
+class Label:
+    name: str
+    address: Optional[int] = None
+    opcode: Optional[Opcode] = Opcode.D_LABEL
+
+    def __repr__(self) -> str:
+        s = self.name + ': ' + str(self.address)
+        return s
 
 # Report an error and exit with an error code.
 def error(message, *args):
@@ -145,6 +158,7 @@ def error(message, *args):
 @dataclass
 class AssemblyParser:
     program: List[Instruction] = field(default_factory=list)
+    labels: List[Label] = field(default_factory=list)
 
     # Abort with an error message.
     def error(self, message):
@@ -171,8 +185,23 @@ class AssemblyParser:
     def parse_program(self):
         self.skip()
         while len(self.current_input) > 0:
-            inst = self.parse_instruction()
-            self.program.append(inst)
+            label = self.parse_labels()
+            if label is not None:
+                self.program.append(label)
+                self.labels.append(label)
+            else:
+                inst = self.parse_instruction()
+                self.program.append(inst)
+
+    # Parse a label.
+    def parse_labels(self) -> Label:
+        # Labels
+        label = self.parse_label()
+        for check_exist in self.labels:
+            if check_exist.name == label:
+                self.error(f"duplicate label {label}")
+        if label is not None:
+            return Label(label) 
 
     # Parse an instruction.
     def parse_instruction(self) -> Instruction:
@@ -326,28 +355,35 @@ class AssemblyParser:
             )
         return Operand(OperandKind.RegPair, lo)
 
-    # Parse an immediate, like `42` or `0xbeef`.
+    # Parse an immediate, like `42` or `0xbeef` or label or expression
     def parse_immediate(self) -> Operand:
-        negative = False
-        if m := self.consume_regex(r'[+-]', skip=False):
-            negative = m[0] == '-'
-        base = 10
-        digits = r'[0-9_]+\b'
-        if m := self.consume_regex(r'0[xob]', skip=False):
-            if m[0] == "0x":
-                base = 16
-                digits = r'[0-9a-fA-F_]+\b'
-            elif m[0] == "0o":
-                base = 8
-                digits = r'[0-7_]+\b'
-            elif m[0] == "0b":
-                base = 2
-                digits = r'[01_]+\b'
-        value = self.parse_regex(digits, f"expected base-{base} integer")
-        value = int(value[0].replace("_", ""), base)
-        if negative:
-            value = -value
-        return Operand(OperandKind.Imm, value)
+        operand = self.parse_regex(r'([a-zA-Z_0-9\+\-\(\)\*\/]*)')
+        immidiate_operand = operand[1]
+        if immidiate_operand[0] in ["+", "-"]:
+            value = int(immidiate_operand, 10)
+            return Operand(OperandKind.Imm, value)
+        elif immidiate_operand.isdigit():
+            value = int(immidiate_operand, 10)
+            return Operand(OperandKind.Imm, value)
+        elif immidiate_operand[0:2] in ['0x']:
+            value = int(immidiate_operand.replace("_", ""), 16)
+            return Operand(OperandKind.Imm, value)
+        elif immidiate_operand[0:2] in ['0o']:
+            value = int(immidiate_operand.replace("_", ""), 8)
+            return Operand(OperandKind.Imm, value)
+        elif immidiate_operand[0:2] in ['0b']:
+            value = int(immidiate_operand.replace("_", ""), 2)
+            return Operand(OperandKind.Imm, value)
+        elif immidiate_operand[0] == '(' and immidiate_operand[-1] == ')':
+            return Operand(OperandKind.Expression, operand[1])
+        else:
+            label = operand[1]
+            return Operand(OperandKind.Label, label)
+
+    def parse_label(self) -> Optional[str]:
+        if m := self.consume_regex(r'([a-zA-Z0-9_]*):+', skip=True):
+            return m[1]
+        return None
 
     # Parse a condition code, like `c` or `ugt`.
     def parse_condition(self) -> Operand:
@@ -427,6 +463,11 @@ class AssemblyPrinter:
             if inst.encoding is not None:
                 encoding = f"{inst.encoding:04X}"
             self.emit(f"{encoding}  ")
+
+        #labels
+        if inst.opcode == Opcode.D_LABEL:
+            self.emit(f"{inst.name}:")
+            return
 
         # Actual instructions
         if inst.opcode == Opcode.NOP:
@@ -619,9 +660,11 @@ class AssemblyPrinter:
 class Layouter:
     current_address: int = 0
 
-    def layout_program(self, program: List[Instruction]):
+    def layout_program(self, program: List[Instruction], labels: List[Label]):
         for inst in program:
             self.layout_instruction(inst)
+        for inst in program:
+            self.resolve(inst, labels)
 
     def layout_instruction(self, inst: Instruction):
         if inst.opcode == Opcode.D_ORG:
@@ -633,10 +676,37 @@ class Layouter:
             self.current_address = org_address
             inst.address = org_address
             return
+        elif inst.opcode == Opcode.D_LABEL: 
+            inst.address = self.current_address
+            return
+        else:
+            inst.address = self.current_address
+            self.current_address += 2
 
-        inst.address = self.current_address
-        self.current_address += 2
-
+    def resolve(self, inst: Instruction, labels: List[Label]) -> None:
+        if inst.opcode != Opcode.D_LABEL:
+            # Opcodes that take a label as an operand
+            for i, operand in enumerate(inst.operands):
+                for label in labels:
+                    if operand.value == label.name:
+                        # replace label operand "Label" with operand "Imm" with label address
+                        inst.operands[i] = Operand(OperandKind.Imm, label.address) 
+                        # exception opcodes that need recalculation of address value
+                        if inst.opcode == Opcode.JRELI:
+                            #calculate relative step
+                            relative_step = label.address - inst.address 
+                            # replace label operand "Label" with operand "Imm" for relative step
+                            inst.operands[i] = Operand(OperandKind.Imm, relative_step) 
+                if operand.kind == OperandKind.Expression:
+                    #get label name in expression and replace with value in expression
+                    label_dict = {}
+                    for label in labels:
+                        label_dict[label.name] = label.address
+                    #calculate value of expression
+                    exec('ValueOfExpression=' + operand.value, label_dict)
+                    value = int(label_dict['ValueOfExpression'])
+                    # replace expression operand "Expression" with operand "Imm" 
+                    inst.operands[i] = Operand(OperandKind.Imm, value) 
 
 # An encoder that computes the binary encoding for every instruction in a
 # program.
@@ -816,6 +886,11 @@ class InstructionEncoder:
             self.encoding = None
             return
 
+        # labels
+        if inst.opcode == Opcode.D_LABEL:
+            self.encoding = None
+            return
+
         self.error("unencodable instruction")
 
     # Store the `value` into the instruction bits from `offset` to
@@ -941,7 +1016,7 @@ for i in args.inputs:
     parser.parse_file(i)
 
 # Compute the addresses of each instruction.
-Layouter().layout_program(parser.program)
+Layouter().layout_program(parser.program, parser.labels)
 
 # Compute the binary encoding of each instruction.
 InstructionEncoder().encode_program(parser.program)

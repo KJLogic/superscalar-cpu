@@ -3,6 +3,9 @@
        across multiple lines */
 
     # Clear registers to zero.
+    ldi r0, (6*8-96/2+8)
+    ldi r0, (nextpart-0x20)
+    ldi r0, (14-nextpart+18)
     ldi r0, 0x00  # load initial zero
     mv r1, r0
     mv r2, r1
@@ -10,9 +13,10 @@
     mv r4, r3
     mv r5, r4
     mv r6, r5
-    jreli +18  # 0x0020
+    jreli nextpart  # 0x0020
 
 .org 0x20
+nextpart:
     # ALU
     ldi r0, 9
     ldi r1, 10
@@ -74,6 +78,7 @@
     halt  # never reached
 
 .org 0xF040
+loop:
     # Interesting pattern loop.
     ldi r0, 0x01
     ldi r1, 0x02
@@ -91,4 +96,5 @@
     ldi r5, 0x04
     ldi r6, 0x02
     nop
-    jreli -32  # 0xF040
+    jreli loop  # 0xF040
+    
